@@ -47,6 +47,11 @@ identical — send the correct `chain` for the network you are on.
 | TypeScript | [`typescript/amlCheck.ts`](typescript/amlCheck.ts) |
 | Go | [`go/aml_check.go`](go/aml_check.go) |
 
+## AI agents & frameworks
+
+Drop-in tools so an AI agent can screen an address itself — LangChain, CrewAI,
+and a zero-code MCP server for Claude Desktop / Cursor: [`frameworks/`](frameworks/).
+
 ## Pre-transaction gate
 
 The point of a pre-send check is to decline rather than unwind. Screen the
