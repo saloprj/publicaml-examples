@@ -1,0 +1,4787 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "PublicAML Intelligence API",
+  "version": "1.0.0",
+  "summary": "Blockchain anti-money-laundering intelligence: address risk, entity attribution and fund tracing.",
+  "description": "Screen a crypto address, find out what it is and who it belongs to, and follow its money forwards to a cash-out or backwards to its funding.\n\n## Reading a result honestly\n\nThree things about this data are easy to get wrong and each has cost somebody an incorrect conclusion:\n\n1. **An unknown address…",
+  "contact": {
+   "name": "PublicAML",
+   "url": "https://publicaml.org"
+  }
+ },
+ "servers": [
+  {
+   "url": "https://intelapi.publicaml.org",
+   "description": "Production."
+  }
+ ],
+ "tags": [
+  {
+   "name": "Screening",
+   "description": "Risk-screen an address or a transaction."
+  },
+  {
+   "name": "Tracing",
+   "description": "Follow funds forwards to a cash-out or backwards to their source."
+  },
+  {
+   "name": "Graph",
+   "description": "Counterparties and raw transfers."
+  },
+  {
+   "name": "Entities",
+   "description": "Clusters — an exchange rather than one of its addresses."
+  },
+  {
+   "name": "Attestation",
+   "description": "Signed risk verdicts for on-chain consumers."
+  },
+  {
+   "name": "Write",
+   "description": "Contribute labels and incident reports. HMAC required."
+  },
+  {
+   "name": "Reference",
+   "description": "Taxonomy, coverage, health, changelog."
+  }
+ ],
+ "paths": {
+  "/v1/enrich": {
+   "post": {
+    "operationId": "enrichAddresses",
+    "summary": "Screen one or more addresses for money-laundering risk",
+    "description": "The primary endpoint. Give it addresses, get back an AML score, a risk band, what the address is (exchange, mixer, gambling, …), whether it is sanctioned or frozen, where its money came from and why the score is what it is.\n\nBatch: up to 100 addresses in one call, each with its own chain, enriched…",
+    "tags": [
+     "Screening"
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "addresses"
+        ],
+        "properties": {
+         "addresses": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "description": "The addresses to screen. Each needs its own chain.",
+          "items": {
+           "type": "object",
+           "required": [
+            "wallet_address",
+            "chain"
+           ],
+           "properties": {
+            "wallet_address": {
+             "type": "string",
+             "description": "The address to screen. NOTE the field name: this endpoint uses `wallet_address`, while the trace and transaction endpoints use `address`.\n\nThe address to look up, in its normal display form.\n\n  * bitcoin  — base58 (`1…`, `3…`) or bech32/bech32m (`bc1…`, `bc1p…`). Case is SIGNIFICANT for base58; do…"
+            },
+            "chain": {
+             "type": "string",
+             "enum": [
+              "bitcoin",
+              "ethereum",
+              "bsc",
+              "tron"
+             ],
+             "description": "Which blockchain the address belongs to. Send one of the four values in the enum. The short forms used by the older clients (ETH, BTC, TRX, BNB) and any capitalisation are still accepted, but responses always echo the canonical spelling.\n\nGetting this wrong is the single commonest integration bug:…"
+            }
+           }
+          }
+         },
+         "include": {
+          "type": "array",
+          "description": "Which blocks to compute. Default is ['aml_score','category','counterparties','source_of_funds'] — sending a shorter list makes the call cheaper and faster. An unknown value is a 400 rather than a silently dropped field.",
+          "items": {
+           "type": "string",
+           "enum": [
+            "aml_score",
+            "category",
+            "counterparties",
+            "source_of_funds",
+            "incidents"
+           ]
+          }
+         },
+         "top_n": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 10,
+          "description": "How many counterparties to return per address."
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Per-address results. Check both `entities` and `not_found`.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "entities": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "description": "One enriched address.",
+            "properties": {
+             "wallet_address": {
+              "type": "string",
+              "description": "Echoed in the API's storage form."
+             },
+             "chain": {
+              "type": "string"
+             },
+             "label": {
+              "type": "string",
+              "description": "Display name, when the address is attributed."
+             },
+             "category": {
+              "type": "string",
+              "description": "Entity type: cex, dex, mixer, gambling, bridge, payment, darknet, …"
+             },
+             "category_confidence": {
+              "type": "number"
+             },
+             "entity_role": {
+              "type": "string",
+              "enum": [
+               "hot_wallet",
+               "cold_wallet",
+               "deposit",
+               "gas_supplier",
+               "treasury",
+               "custody"
+              ],
+              "description": "Which address of the venue this is. Refines `category`, never replaces it."
+             },
+             "cluster_id": {
+              "type": "string",
+              "description": "Pass to POST /v1/entities or /v1/cluster-mappings."
+             },
+             "cluster_size": {
+              "type": "integer"
+             },
+             "sanctioned": {
+              "type": [
+               "boolean",
+               "null"
+              ]
+             },
+             "sanction": {
+              "type": "object",
+              "properties": {
+               "label": {
+                "type": "string"
+               },
+               "source": {
+                "type": "string"
+               },
+               "confidence": {
+                "type": "number"
+               },
+               "jurisdictions": {
+                "type": "array",
+                "items": {
+                 "type": "string"
+                }
+               },
+               "name_derived": {
+                "type": "boolean",
+                "description": "true = read out of the entity's NAME, with no structured listing behind it."
+               }
+              }
+             },
+             "frozen": {
+              "type": "boolean",
+              "description": "A token issuer has frozen this address."
+             },
+             "aml_score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Money-laundering risk, 0 (nothing known against it) to 100. This is a RISK figure, not a share of funds: an address that received 1% of its money from a sanctioned entity can score high, and the number never says how much of the balance is tainted.\n\nIt combines its parts by MAX, not by sum — direct…"
+             },
+             "risk_level": {
+              "type": "string",
+              "enum": [
+               "LOW",
+               "MEDIUM",
+               "HIGH",
+               "CRITICAL"
+              ],
+              "description": "The coarse band `aml_score` falls in, for callers that branch rather than plot. Provided so that every integration uses the same thresholds:\n\n  * `LOW`      — score below 25\n  * `MEDIUM`   — 25 to 59\n  * `HIGH`     — 60 to 89\n  * `CRITICAL` — 90 or above, OR `sanctioned: true` at any score\n\nThe san…"
+             },
+             "aml_score_breakdown": {
+              "type": "object",
+              "description": "Why `aml_score` is what it is. Combine by MAX, not by sum. Most sub-blocks appear only when they apply, so absence means 'did not fire', never 0.",
+              "properties": {
+               "direct_exposure": {
+                "type": "number",
+                "description": "Risk from this address's OWN labels and seeds."
+               },
+               "indirect_exposure": {
+                "type": "number",
+                "description": "MAX over the propagated origins — not their sum."
+               },
+               "behavioral_risk": {
+                "type": [
+                 "number",
+                 "null"
+                ],
+                "description": "null = no behavioural signal assessed; 0 = assessed and contributed nothing."
+               },
+               "exposure_direction": {
+                "type": "string",
+                "enum": [
+                 "inbound",
+                 "outbound",
+                 "mixed"
+                ]
+               },
+               "sanction_direct": {
+                "type": "object",
+                "description": "Present when the address is itself on a sanctions list.",
+                "properties": {
+                 "label": {
+                  "type": "string"
+                 },
+                 "score": {
+                  "type": "number"
+                 },
+                 "source": {
+                  "type": "string"
+                 },
+                 "jurisdictions": {
+                  "type": "array",
+                  "items": {
+                   "type": "string"
+                  },
+                  "description": "US, EU, GB, UN. Absent means the authority was never recorded, not that there is none."
+                 }
+                }
+               },
+               "frozen_direct": {
+                "type": "object",
+                "description": "Token issuer (Tether/Circle) has frozen this address.",
+                "properties": {
+                 "issuers": {
+                  "type": "array",
+                  "items": {
+                   "type": "string"
+                  }
+                 },
+                 "score": {
+                  "type": "number"
+                 },
+                 "tokens": {
+                  "type": "array",
+                  "items": {
+                   "type": "string"
+                  }
+                 }
+                }
+               },
+               "entity_floor": {
+                "type": "object",
+                "description": "The score was forced to a known-clean floor because the address is identified infrastructure (an exchange hot wallet, a token contract). `raw_score` is what it would have been. Read this before reporting a 0.",
+                "properties": {
+                 "reason": {
+                  "type": "string"
+                 },
+                 "raw_score": {
+                  "type": "number"
+                 }
+                }
+               },
+               "incident_bonus": {
+                "type": "number",
+                "description": "Flat surcharge added because the incident canon names this address as a PARTICIPANT in a recorded incident — `incidents[].implicates_address` is true, i.e. role `perpetrator` or `intermediary`. Flat per address, not per incident: five reports about one address are still one claim. Victims and `ment…"
+               },
+               "non_wallet": {
+                "type": "object",
+                "description": "Not a wallet at all: a mint/burn pseudo-address or a token contract. Both exposures forced to 0.",
+                "properties": {
+                 "reason": {
+                  "type": "string"
+                 },
+                 "suppressed_direct": {
+                  "type": "number"
+                 },
+                 "suppressed_indirect": {
+                  "type": "number"
+                 },
+                 "registry": {
+                  "type": "string"
+                 }
+                }
+               },
+               "contacts": {
+                "type": "object",
+                "description": "Real counterparties whose transferred value is below the materiality threshold: recorded on purpose, scored at zero on purpose. A dusting attack must not raise a victim's score.",
+                "properties": {
+                 "count": {
+                  "type": "integer"
+                 },
+                 "max_value_usd": {
+                  "type": "number"
+                 },
+                 "threshold_usd": {
+                  "type": "number"
+                 },
+                 "reason": {
+                  "type": "string"
+                 }
+                }
+               },
+               "sanctions_contact": {
+                "type": "object",
+                "description": "Sub-threshold contact with a designated address. Lifted out of `contacts` because it is reportable regardless of amount.",
+                "properties": {
+                 "count": {
+                  "type": "integer"
+                 },
+                 "max_value_usd": {
+                  "type": "number"
+                 },
+                 "reason": {
+                  "type": "string"
+                 }
+                }
+               },
+               "propagated_sources": {
+                "type": "array",
+                "description": "At most 10 rows, ordered by (hops asc, score desc).",
+                "items": {
+                 "type": "object",
+                 "description": "One risk origin that reached this address through the transaction graph. The money path is `src → … → via → this address` and only the two ends are returned; walk the middle with POST /v1/source-trace.",
+                 "properties": {
+                  "src": {
+                   "type": "string",
+                   "description": "The origin the risk started at."
+                  },
+                  "src_label": {
+                   "type": [
+                    "string",
+                    "null"
+                   ]
+                  },
+                  "category": {
+                   "type": [
+                    "string",
+                    "null"
+                   ],
+                   "description": "sanction, mixer, hack, phishing, darknet, …"
+                  },
+                  "source": {
+                   "type": [
+                    "string",
+                    "null"
+                   ],
+                   "description": "Who made the accusation, e.g. 'ofac:sdn_advanced'."
+                  },
+                  "source_tier": {
+                   "type": [
+                    "string",
+                    "null"
+                   ],
+                   "description": "'community-report' for user-filed feeds; null means not tiered down."
+                  },
+                  "hops": {
+                   "type": "integer",
+                   "description": "Graph distance from `src` to this address."
+                  },
+                  "score": {
+                   "type": "number",
+                   "description": "Hop-decayed RISK contributed by this origin. Never a share of funds."
+                  },
+                  "via": {
+                   "type": [
+                    "string",
+                    "null"
+                   ],
+                   "description": "The address that actually paid this one. null at hops 0 and 1."
+                  },
+                  "via_label": {
+                   "type": [
+                    "string",
+                    "null"
+                   ]
+                  },
+                  "direction": {
+                   "type": "string",
+                   "const": "inbound"
+                  }
+                 }
+                }
+               }
+              }
+             },
+             "source_of_funds": {
+              "type": "object",
+              "description": "Where the money came from, as CATEGORY buckets — not as addresses and not as a full accounting. The percentages need not sum to 100 and a bucket may legitimately be 0.",
+              "properties": {
+               "risk_summary": {
+                "type": "string",
+                "enum": [
+                 "low",
+                 "medium",
+                 "high"
+                ]
+               },
+               "top_sources": {
+                "type": "array",
+                "items": {
+                 "type": "object",
+                 "properties": {
+                  "category": {
+                   "type": "string"
+                  },
+                  "percentage": {
+                   "type": "number"
+                  },
+                  "label": {
+                   "type": [
+                    "string",
+                    "null"
+                   ]
+                  },
+                  "sanctioned": {
+                   "type": "boolean"
+                  }
+                 }
+                }
+               }
+              }
+             },
+             "counterparties": {
+              "type": "array",
+              "items": {
+               "type": "object"
+              },
+              "description": "Top counterparties by value. Use POST /v1/counterparties for the full picture."
+             },
+             "incidents": {
+              "type": "array",
+              "items": {
+               "type": "object",
+               "description": "A documented incident this address appears in. Read `implicates_address` before presenting it as an accusation: a drained wallet is listed with role='victim' precisely so it is not mistaken for a participant.",
+               "properties": {
+                "slug": {
+                 "type": "string"
+                },
+                "name": {
+                 "type": "string"
+                },
+                "category": {
+                 "type": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "status": {
+                 "type": "string",
+                 "enum": [
+                  "confirmed",
+                  "alleged",
+                  "disputed",
+                  "retracted"
+                 ],
+                 "description": "Anything but 'confirmed' must stay visible to the reader."
+                },
+                "stream": {
+                 "type": "string",
+                 "enum": [
+                  "curated",
+                  "community"
+                 ],
+                 "description": "'curated' is an analyst-recorded investigation; 'community' is a user-filed report. Same shape, NOT the same grade of claim."
+                },
+                "occurred_at": {
+                 "type": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "summary": {
+                 "type": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "link": {
+                 "type": "string",
+                 "enum": [
+                  "direct",
+                  "propagated"
+                 ],
+                 "description": "'propagated' means the incident belongs to an origin whose risk reached here — it says nothing about this address."
+                },
+                "role": {
+                 "type": [
+                  "string",
+                  "null"
+                 ],
+                 "enum": [
+                  "perpetrator",
+                  "intermediary",
+                  "victim",
+                  "mentioned",
+                  null
+                 ]
+                },
+                "implicates_address": {
+                 "type": "boolean"
+                },
+                "named_in_source": {
+                 "type": "boolean",
+                 "description": "false = no published source prints this address; the link is our attribution."
+                },
+                "via": {
+                 "type": "object",
+                 "properties": {
+                  "address": {
+                   "type": "string"
+                  },
+                  "hops": {
+                   "type": [
+                    "integer",
+                    "null"
+                   ]
+                  }
+                 }
+                },
+                "sources": {
+                 "type": "array",
+                 "items": {
+                  "type": "object",
+                  "properties": {
+                   "url": {
+                    "type": "string"
+                   },
+                   "title": {
+                    "type": [
+                     "string",
+                     "null"
+                    ]
+                   },
+                   "publisher": {
+                    "type": [
+                     "string",
+                     "null"
+                    ]
+                   },
+                   "tier": {
+                    "type": "string",
+                    "enum": [
+                     "vendor-advisory",
+                     "law-enforcement",
+                     "security-firm",
+                     "media",
+                     "social",
+                     "internal"
+                    ]
+                   },
+                   "published_at": {
+                    "type": [
+                     "string",
+                     "null"
+                    ]
+                   },
+                   "archive_url": {
+                    "type": [
+                     "string",
+                     "null"
+                    ]
+                   },
+                   "content_sha256": {
+                    "type": [
+                     "string",
+                     "null"
+                    ],
+                    "description": "SHA-256 of the text we read, so a later edit is detectable."
+                   },
+                   "names_addresses": {
+                    "type": "boolean"
+                   },
+                   "excerpt": {
+                    "type": [
+                     "string",
+                     "null"
+                    ]
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              "description": "Opt in with include: ['incidents']."
+             },
+             "degraded": {
+              "type": [
+               "object",
+               "null"
+              ],
+              "description": "A backing store did not answer, so this entity is INCOMPLETE. A low score on a degraded entity is not evidence of a clean address.",
+              "properties": {
+               "reason": {
+                "type": "string"
+               },
+               "calls": {
+                "type": "array",
+                "items": {
+                 "type": "string"
+                }
+               },
+               "causes": {
+                "type": "array",
+                "items": {
+                 "type": "string"
+                }
+               }
+              }
+             }
+            }
+           },
+           "description": "One per address we hold data for. May be shorter than the request."
+          },
+          "not_found": {
+           "type": "array",
+           "description": "Addresses that produced no entity, and why. This is NOT a clean bill of health.",
+           "items": {
+            "type": "object",
+            "properties": {
+             "wallet_address": {
+              "type": "string"
+             },
+             "chain": {
+              "type": "string"
+             },
+             "reason": {
+              "type": "string",
+              "enum": [
+               "address_not_found",
+               "unsupported_chain",
+               "invalid_address_format"
+              ],
+              "description": "`address_not_found` — well-formed, but absent from our data. `unsupported_chain` — chain we do not serve. `invalid_address_format` — the address cannot belong to that chain; `detail` and `hint` say how to fix it."
+             },
+             "detail": {
+              "type": "string"
+             },
+             "hint": {
+              "type": "string"
+             }
+            }
+           }
+          },
+          "request_id": {
+           "type": "string",
+           "description": "Quote this when reporting a problem."
+          },
+          "processing_time_ms": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "$ref": "#/components/schemas/InvalidAddressError"
+          },
+          {
+           "$ref": "#/components/schemas/Error"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/trace": {
+   "post": {
+    "operationId": "traceForward",
+    "summary": "Follow an address's money forward to where it was cashed out",
+    "description": "Value-weighted forward walk. Follows the largest outgoing flows hop by hop and reports two things: `cashout_summary` (funds that reached a labelled exchange / OTC / mixer / service — where the money left the chain's anonymous part) and `hanging` (funds sitting in unlabelled dead ends).\n\nBounded by…",
+    "tags": [
+     "Tracing"
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "address",
+         "chain"
+        ],
+        "properties": {
+         "address": {
+          "type": "string",
+          "description": "The address whose outgoing funds to follow.\n\nThe address to look up, in its normal display form.\n\n  * bitcoin  — base58 (`1…`, `3…`) or bech32/bech32m (`bc1…`, `bc1p…`). Case is SIGNIFICANT for base58; do not lowercase it.\n  * ethereum, bsc — `0x` + 40 hex characters, any case.\n  * tron — base58 (`…"
+         },
+         "chain": {
+          "type": "string",
+          "enum": [
+           "bitcoin",
+           "ethereum",
+           "bsc",
+           "tron"
+          ],
+          "description": "Which blockchain the address belongs to. Send one of the four values in the enum. The short forms used by the older clients (ETH, BTC, TRX, BNB) and any capitalisation are still accepted, but responses always echo the canonical spelling.\n\nGetting this wrong is the single commonest integration bug:…"
+         },
+         "max_hops": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8,
+          "description": "Default 5 (8 on bitcoin). On bitcoin one hop is HALF an economic step: the graph runs address → transaction → address."
+         },
+         "max_width": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 12,
+          "default": 6,
+          "description": "How many outgoing edges to follow per address, largest first."
+         },
+         "budget_sec": {
+          "type": "number",
+          "description": "Wall-clock ceiling. Default 8 s (40 s on bitcoin)."
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The forward trace.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "address": {
+           "type": "string"
+          },
+          "chain": {
+           "type": "string"
+          },
+          "hops_traced": {
+           "type": "integer",
+           "description": "Below `max_hops` means the budget ran out, not that the money stopped."
+          },
+          "elapsed_ms": {
+           "type": "integer"
+          },
+          "cashout_summary": {
+           "type": "array",
+           "description": "Where the money left, biggest first.",
+           "items": {
+            "type": "object",
+            "properties": {
+             "entity": {
+              "type": [
+               "string",
+               "null"
+              ],
+              "description": "Venue name, when known."
+             },
+             "category": {
+              "type": "string"
+             },
+             "value_raw": {
+              "type": "number",
+              "description": "Cross-token 18-decimal weight, comparable between rows but NOT a coin amount. Never show it to a person on its own."
+             },
+             "assets": {
+              "type": "array",
+              "description": "The same value in the coins that actually arrived — this is the figure to display.",
+              "items": {
+               "type": "object",
+               "properties": {
+                "symbol": {
+                 "type": "string"
+                },
+                "amount": {
+                 "type": "number"
+                }
+               }
+              }
+             },
+             "hits": {
+              "type": "integer"
+             },
+             "first_hop": {
+              "type": "integer"
+             },
+             "example_address": {
+              "type": "string"
+             }
+            }
+           }
+          },
+          "hanging": {
+           "type": "array",
+           "items": {
+            "type": "object"
+           },
+           "description": "Unlabelled dead ends — funds that are resting, not exited."
+          },
+          "still_moving": {
+           "type": "array",
+           "items": {
+            "type": "object"
+           },
+           "description": "Addresses the walk stopped at because of the hop or time limit, not because the money stopped."
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "$ref": "#/components/schemas/InvalidAddressError"
+          },
+          {
+           "$ref": "#/components/schemas/Error"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/source-trace": {
+   "post": {
+    "operationId": "traceFunding",
+    "summary": "Walk an address's funding backwards to find who paid it",
+    "description": "The mirror of /v1/trace: walks INCOMING edges backwards to answer 'where did this wallet's money come from'. Any labelled entity is a dead end (the trail stops at the exchange rather than walking into its other customers), and so is an unlabelled wallet whose own degree makes it a service — otherwi…",
+    "tags": [
+     "Tracing"
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "address",
+         "chain"
+        ],
+        "properties": {
+         "address": {
+          "type": "string",
+          "description": "The address whose funding to trace.\n\nThe address to look up, in its normal display form.\n\n  * bitcoin  — base58 (`1…`, `3…`) or bech32/bech32m (`bc1…`, `bc1p…`). Case is SIGNIFICANT for base58; do not lowercase it.\n  * ethereum, bsc — `0x` + 40 hex characters, any case.\n  * tron — base58 (`T…`, 34…"
+         },
+         "chain": {
+          "type": "string",
+          "enum": [
+           "bitcoin",
+           "ethereum",
+           "bsc",
+           "tron"
+          ],
+          "description": "Which blockchain the address belongs to. Send one of the four values in the enum. The short forms used by the older clients (ETH, BTC, TRX, BNB) and any capitalisation are still accepted, but responses always echo the canonical spelling.\n\nGetting this wrong is the single commonest integration bug:…"
+         },
+         "max_hops": {
+          "type": "integer",
+          "description": "How far back to walk."
+         },
+         "max_width": {
+          "type": "integer",
+          "maximum": 12,
+          "description": "Funders to expand per address, largest first."
+         },
+         "max_nodes": {
+          "type": "integer",
+          "maximum": 5000,
+          "description": "Hard ceiling. Hitting it ends the walk with truncated: true."
+         },
+         "budget_sec": {
+          "type": "number",
+          "maximum": 120
+         },
+         "surface_categories": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          },
+          "description": "Which labelled entity types to aggregate into `source_links`. Default ['gambling']."
+         },
+         "stop_at_hubs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Stop at unlabelled high-degree addresses. Turning this off will pull in unrelated wallets."
+         },
+         "cursor": {
+          "type": "string",
+          "description": "Resume token from a prior `done: false` response."
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The backward funding trace.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "root": {
+           "type": "object",
+           "description": "The subject's own profile — score, counterparties, source of funds."
+          },
+          "source_links": {
+           "type": "array",
+           "items": {
+            "type": "object"
+           },
+           "description": "Labelled funding sources found, aggregated. Cumulative across resumed calls."
+          },
+          "hop_trace": {
+           "type": "array",
+           "items": {
+            "type": "object"
+           },
+           "description": "Nodes visited by THIS call only."
+          },
+          "nodes_visited": {
+           "type": "integer"
+          },
+          "hub_stops": {
+           "type": "integer",
+           "description": "Addresses not expanded because their degree made them a service."
+          },
+          "truncated": {
+           "type": "boolean"
+          },
+          "done": {
+           "type": "boolean",
+           "description": "false = more remains; re-send with `cursor`."
+          },
+          "cursor": {
+           "type": [
+            "string",
+            "null"
+           ]
+          },
+          "effective": {
+           "type": "object",
+           "description": "The parameters actually used."
+          },
+          "clamped": {
+           "type": "array",
+           "items": {
+            "type": "string"
+           },
+           "description": "Parameters that were reduced to their allowed range."
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "$ref": "#/components/schemas/InvalidAddressError"
+          },
+          {
+           "$ref": "#/components/schemas/Error"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/counterparties": {
+   "post": {
+    "operationId": "getCounterparties",
+    "summary": "Who an address transacted with, with amounts per token",
+    "description": "Three modes, selected by which field you send. They do not combine.\n\n1. `filter` — you already have candidate addresses and want to know whether this wallet dealt with them, and for how much. Ones with no recorded interaction are dropped from the answer.\n2. `category` — 'did this wallet touch any e…",
+    "tags": [
+     "Graph"
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "wallet_address",
+         "chain"
+        ],
+        "properties": {
+         "wallet_address": {
+          "type": "string",
+          "description": "The wallet whose counterparties to look at.\n\nThe address to look up, in its normal display form.\n\n  * bitcoin  — base58 (`1…`, `3…`) or bech32/bech32m (`bc1…`, `bc1p…`). Case is SIGNIFICANT for base58; do not lowercase it.\n  * ethereum, bsc — `0x` + 40 hex characters, any case.\n  * tron — base58 (`…"
+         },
+         "chain": {
+          "type": "string",
+          "enum": [
+           "bitcoin",
+           "ethereum",
+           "bsc",
+           "tron"
+          ],
+          "description": "Which blockchain the address belongs to. Send one of the four values in the enum. The short forms used by the older clients (ETH, BTC, TRX, BNB) and any capitalisation are still accepted, but responses always echo the canonical spelling.\n\nGetting this wrong is the single commonest integration bug:…"
+         },
+         "filter": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          },
+          "minItems": 1,
+          "maxItems": 100,
+          "description": "Mode 1: candidate counterparty addresses to check."
+         },
+         "category": {
+          "type": "string",
+          "maxLength": 50,
+          "description": "Mode 2: entity type to match — cex, mixer, gambling, bridge, …"
+         },
+         "kinds": {
+          "type": "array",
+          "description": "Mode 3: which classes of counterparty to return. Sending this field is what selects the mode; it is a 400 alongside `filter` or `category`.",
+          "items": {
+           "type": "string",
+           "enum": [
+            "personal",
+            "venue",
+            "hub",
+            "deposit_wallet",
+            "contract",
+            "mint_burn",
+            "unknown"
+           ]
+          }
+         },
+         "direction": {
+          "type": "string",
+          "enum": [
+           "in",
+           "out",
+           "both"
+          ],
+          "description": "`kinds` mode. 'in' (the default there) = who paid this address."
+         },
+         "rank_by": {
+          "type": "string",
+          "enum": [
+           "value",
+           "tx_count"
+          ],
+          "default": "value",
+          "description": "'value' weighs token units with NO price attached, so a memecoin sender can outrank an ETH sender. Use 'tx_count' to avoid that."
+         },
+         "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 50
+         },
+         "offset": {
+          "type": "integer",
+          "minimum": 0
+         },
+         "include": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "enum": [
+            "risk"
+           ]
+          },
+          "description": "['risk'] adds aml_score, risk_level and sanctioned to each row."
+         },
+         "since": {
+          "type": [
+           "integer",
+           "string"
+          ],
+          "description": "Restrict to a time window. Epoch seconds or ISO-8601 ('2026-06-21')."
+         },
+         "until": {
+          "type": [
+           "integer",
+           "string"
+          ]
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Counterparties with per-token amounts.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "wallet_address": {
+           "type": "string"
+          },
+          "chain": {
+           "type": "string"
+          },
+          "counterparties": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "properties": {
+             "address": {
+              "type": "string"
+             },
+             "label": {
+              "type": [
+               "string",
+               "null"
+              ]
+             },
+             "category": {
+              "type": [
+               "string",
+               "null"
+              ]
+             },
+             "tx_count": {
+              "type": "integer"
+             },
+             "first_block": {
+              "type": "integer"
+             },
+             "last_block": {
+              "type": "integer"
+             },
+             "tokens": {
+              "type": "array",
+              "description": "Per asset, in proper units (not wei). Sorted by max(sent, received).",
+              "items": {
+               "type": "object",
+               "properties": {
+                "token": {
+                 "type": "string",
+                 "description": "Contract address; empty string means the chain's native coin. EVM: bare hex with NO 0x prefix."
+                },
+                "symbol": {
+                 "type": [
+                  "string",
+                  "null"
+                 ],
+                 "description": "null for contracts outside the known-token registry; `decimals` then falls back to 18 and the amount may be wrong. Prefer the raw figure when this is null."
+                },
+                "decimals": {
+                 "type": "integer"
+                },
+                "sent": {
+                 "type": "number"
+                },
+                "received": {
+                 "type": "number"
+                },
+                "sent_tx_count": {
+                 "type": "integer"
+                },
+                "received_tx_count": {
+                 "type": "integer"
+                }
+               }
+              }
+             },
+             "sanctioned": {
+              "type": "boolean"
+             },
+             "aml_score": {
+              "type": [
+               "number",
+               "null"
+              ],
+              "description": "include: ['risk'] only."
+             },
+             "risk_level": {
+              "type": "string",
+              "enum": [
+               "LOW",
+               "MEDIUM",
+               "HIGH",
+               "CRITICAL"
+              ],
+              "description": "include: ['risk'] only. The coarse band `aml_score` falls in, for callers that branch rather than plot. Provided so that every integration uses the same thresholds:\n\n  * `LOW`      — score below 25\n  * `MEDIUM`   — 25 to 59\n  * `HIGH`     — 60 to 89\n  * `CRITICAL` — 90 or above, OR `sanctioned: tru…"
+             },
+             "kind": {
+              "type": "string",
+              "enum": [
+               "personal",
+               "venue",
+               "hub",
+               "deposit_wallet",
+               "contract",
+               "mint_burn",
+               "unknown"
+              ],
+              "description": "`kinds` mode. 'unknown' means not probed (cap or budget), not 'nothing there'."
+             },
+             "kind_reason": {
+              "type": "string",
+              "description": "`kinds` mode: the label or degree that decided it."
+             },
+             "value_raw": {
+              "type": "string",
+              "description": "`kinds` mode. Decimal STRING — a uint256 does not survive a JS number."
+             },
+             "degree": {
+              "type": [
+               "object",
+               "null"
+              ],
+              "description": "Degree measured in a bounded window. A LOWER BOUND, never a lifetime degree."
+             }
+            }
+           }
+          },
+          "summary": {
+           "type": "object",
+           "description": "`kinds` mode: count per kind."
+          },
+          "value_split": {
+           "type": "object",
+           "description": "`kinds` mode: how the value divides across kinds, tokens at face value."
+          },
+          "coverage": {
+           "type": "object",
+           "description": "What the scan actually managed to read."
+          },
+          "partial": {
+           "type": "boolean",
+           "description": "true = a cap or budget cut the answer, so the list is a floor, not the whole set."
+          },
+          "request_id": {
+           "type": "string"
+          },
+          "processing_time_ms": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "$ref": "#/components/schemas/InvalidAddressError"
+          },
+          {
+           "$ref": "#/components/schemas/Error"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/address-transactions": {
+   "post": {
+    "operationId": "getAddressTransactions",
+    "summary": "Transfers touching one address, newest first",
+    "description": "A wallet's transaction feed, with the counterparty and signed direction resolved for each transfer. Optionally annotates each counterparty with its label, or filters the whole window down to transfers with a counterparty of one category ('did this wallet deposit to a casino last month').\n\nThe categ…",
+    "tags": [
+     "Graph"
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "address",
+         "chain"
+        ],
+        "properties": {
+         "address": {
+          "type": "string",
+          "description": "The address to look up, in its normal display form.\n\n  * bitcoin  — base58 (`1…`, `3…`) or bech32/bech32m (`bc1…`, `bc1p…`). Case is SIGNIFICANT for base58; do not lowercase it.\n  * ethereum, bsc — `0x` + 40 hex characters, any case.\n  * tron — base58 (`T…`, 34 characters); the `0x` 20-byte form is…"
+         },
+         "chain": {
+          "type": "string",
+          "enum": [
+           "bitcoin",
+           "ethereum",
+           "bsc",
+           "tron"
+          ],
+          "description": "Which blockchain the address belongs to. Send one of the four values in the enum. The short forms used by the older clients (ETH, BTC, TRX, BNB) and any capitalisation are still accepted, but responses always echo the canonical spelling.\n\nGetting this wrong is the single commonest integration bug:…"
+         },
+         "since": {
+          "type": [
+           "integer",
+           "string"
+          ],
+          "description": "Inclusive lower bound. Epoch seconds or ISO-8601 ('2026-06-21')."
+         },
+         "until": {
+          "type": [
+           "integer",
+           "string"
+          ],
+          "description": "Inclusive upper bound."
+         },
+         "token": {
+          "type": "string",
+          "description": "Restrict to one token contract. EVM only."
+         },
+         "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 100
+         },
+         "offset": {
+          "type": "integer",
+          "minimum": 0
+         },
+         "include": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "enum": [
+            "counterparty_labels"
+           ]
+          },
+          "description": "Adds what we know about each counterparty. Unknown values are a 400."
+         },
+         "counterparty_category": {
+          "type": "string",
+          "description": "Keep only transfers whose counterparty carries this label category. Implies include: ['counterparty_labels']."
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "A page of transfers, newest first.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "address": {
+           "type": "string"
+          },
+          "chain": {
+           "type": "string"
+          },
+          "count": {
+           "type": "integer"
+          },
+          "has_more": {
+           "type": "boolean"
+          },
+          "transactions": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "properties": {
+             "tx_hash": {
+              "type": "string"
+             },
+             "block_number": {
+              "type": "string"
+             },
+             "timestamp": {
+              "type": "integer",
+              "description": "Unix seconds."
+             },
+             "direction": {
+              "type": "string",
+              "enum": [
+               "in",
+               "out",
+               "self"
+              ]
+             },
+             "counterparty": {
+              "type": "string",
+              "description": "The address on the other side — EXCEPT on bitcoin, where the graph runs address → transaction → address and this is the transaction hash. The wallets are then in `counterparties[]`."
+             },
+             "counterparties": {
+              "type": "array",
+              "items": {
+               "type": "string"
+              },
+              "description": "bitcoin only: the wallets on the other side of the transaction."
+             },
+             "symbol": {
+              "type": [
+               "string",
+               "null"
+              ]
+             },
+             "decimals": {
+              "type": "integer"
+             },
+             "value": {
+              "type": [
+               "number",
+               "null"
+              ],
+              "description": "Human-readable amount. null, or computed with a fallback of 18 decimals, for tokens outside the known-token registry — prefer `amount_raw` then."
+             },
+             "amount_raw": {
+              "type": "string",
+              "description": "Exact amount in the token's smallest unit, as a decimal string."
+             },
+             "counterparty_labels": {
+              "type": "array",
+              "items": {
+               "type": "object",
+               "description": "What we know about one address on the other side of a transfer.",
+               "properties": {
+                "address": {
+                 "type": "string"
+                },
+                "label": {
+                 "type": [
+                  "string",
+                  "null"
+                 ],
+                 "description": "Display name of the entity, e.g. 'Binance 14'."
+                },
+                "category": {
+                 "type": [
+                  "string",
+                  "null"
+                 ],
+                 "description": "Entity type: cex, dex, mixer, gambling, bridge, payment, …"
+                },
+                "source": {
+                 "type": [
+                  "string",
+                  "null"
+                 ],
+                 "description": "Which feed stated this — arkham, etherscan, ofac, a customer push."
+                },
+                "confidence": {
+                 "type": [
+                  "number",
+                  "null"
+                 ]
+                },
+                "risk_score": {
+                 "type": "number"
+                },
+                "sanctioned": {
+                 "type": "boolean"
+                },
+                "sanction": {
+                 "type": "object",
+                 "properties": {
+                  "label": {
+                   "type": [
+                    "string",
+                    "null"
+                   ]
+                  },
+                  "source": {
+                   "type": [
+                    "string",
+                    "null"
+                   ]
+                  }
+                 }
+                }
+               }
+              },
+              "description": "Opt-in. An empty array means no label is held, not that it was not looked up."
+             }
+            }
+           }
+          },
+          "matched_counterparties": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "description": "What we know about one address on the other side of a transfer.",
+            "properties": {
+             "address": {
+              "type": "string"
+             },
+             "label": {
+              "type": [
+               "string",
+               "null"
+              ],
+              "description": "Display name of the entity, e.g. 'Binance 14'."
+             },
+             "category": {
+              "type": [
+               "string",
+               "null"
+              ],
+              "description": "Entity type: cex, dex, mixer, gambling, bridge, payment, …"
+             },
+             "source": {
+              "type": [
+               "string",
+               "null"
+              ],
+              "description": "Which feed stated this — arkham, etherscan, ofac, a customer push."
+             },
+             "confidence": {
+              "type": [
+               "number",
+               "null"
+              ]
+             },
+             "risk_score": {
+              "type": "number"
+             },
+             "sanctioned": {
+              "type": "boolean"
+             },
+             "sanction": {
+              "type": "object",
+              "properties": {
+               "label": {
+                "type": [
+                 "string",
+                 "null"
+                ]
+               },
+               "source": {
+                "type": [
+                 "string",
+                 "null"
+                ]
+               }
+              }
+             }
+            }
+           },
+           "description": "With `counterparty_category`: the labelled venues actually hit in the window."
+          },
+          "counterparty_scan": {
+           "type": "object",
+           "description": "How much of the window the label scan covered. `truncated: true` makes the match count a lower bound."
+          },
+          "request_id": {
+           "type": "string"
+          },
+          "processing_time_ms": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "$ref": "#/components/schemas/InvalidAddressError"
+          },
+          {
+           "$ref": "#/components/schemas/Error"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/entity-transfers": {
+   "post": {
+    "operationId": "getEntityTransfers",
+    "summary": "Did this wallet pay a specific venue, and how much",
+    "description": "Answers one question well: 'has this wallet sent money to <venue>'. Returns the verdict over the whole window (`found`), per-asset totals, and the individual transfers.\n\n**A `found: false` is only conclusive when you passed `since`/`until`.** Without a window the counterparty list comes from an ind…",
+    "tags": [
+     "Graph"
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "address",
+         "chain"
+        ],
+        "properties": {
+         "address": {
+          "type": "string",
+          "description": "The wallet under investigation.\n\nThe address to look up, in its normal display form.\n\n  * bitcoin  — base58 (`1…`, `3…`) or bech32/bech32m (`bc1…`, `bc1p…`). Case is SIGNIFICANT for base58; do not lowercase it.\n  * ethereum, bsc — `0x` + 40 hex characters, any case.\n  * tron — base58 (`T…`, 34 char…"
+         },
+         "chain": {
+          "type": "string",
+          "enum": [
+           "bitcoin",
+           "ethereum",
+           "bsc",
+           "tron"
+          ],
+          "description": "Which blockchain the address belongs to. Send one of the four values in the enum. The short forms used by the older clients (ETH, BTC, TRX, BNB) and any capitalisation are still accepted, but responses always echo the canonical spelling.\n\nGetting this wrong is the single commonest integration bug:…"
+         },
+         "entity": {
+          "type": "string",
+          "description": "Venue name. Exact match — see the endpoint description."
+         },
+         "category": {
+          "type": "string",
+          "description": "Entity type: gambling, cex, mixer, … One of `entity`/`category` is required."
+         },
+         "direction": {
+          "type": "string",
+          "enum": [
+           "out",
+           "in",
+           "both"
+          ],
+          "default": "out",
+          "description": "'out' = money leaving the wallet."
+         },
+         "min_amount": {
+          "type": "number",
+          "description": "Inclusive bound PER TRANSFER, in the asset's own units (1 = 1 BTC, 1 USDT). Not a threshold on the total."
+         },
+         "max_amount": {
+          "type": "number"
+         },
+         "since": {
+          "type": [
+           "integer",
+           "string"
+          ],
+          "description": "Epoch seconds or ISO-8601. Passing a window is what makes a negative answer conclusive."
+         },
+         "until": {
+          "type": [
+           "integer",
+           "string"
+          ]
+         },
+         "token": {
+          "type": "string",
+          "description": "EVM only; rejected on bitcoin."
+         },
+         "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 1000
+         },
+         "offset": {
+          "type": "integer",
+          "minimum": 0
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The verdict, the totals and the transfers.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "found": {
+           "type": "boolean",
+           "description": "The verdict over the whole window, not just this page."
+          },
+          "entity": {
+           "type": "object",
+           "description": "How the name resolved: `matched_names` are the canonical spellings hit, `suggestions` appear when it resolved to nothing."
+          },
+          "totals": {
+           "type": "array",
+           "description": "Per-asset sums over the transfers that passed the filters.",
+           "items": {
+            "type": "object",
+            "properties": {
+             "symbol": {
+              "type": [
+               "string",
+               "null"
+              ]
+             },
+             "amount": {
+              "type": "number"
+             },
+             "amount_raw": {
+              "type": "string",
+              "description": "Stays a string: a float cannot hold 18-decimal token units."
+             },
+             "transfer_count": {
+              "type": "integer"
+             },
+             "tx_count": {
+              "type": "integer"
+             }
+            }
+           }
+          },
+          "transfers_below_min": {
+           "type": "integer",
+           "description": "Non-zero next to found: false means the wallet DID pay, outside the bounds you asked for."
+          },
+          "transfers_above_max": {
+           "type": "integer"
+          },
+          "matched_counterparties": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "description": "What we know about one address on the other side of a transfer.",
+            "properties": {
+             "address": {
+              "type": "string"
+             },
+             "label": {
+              "type": [
+               "string",
+               "null"
+              ],
+              "description": "Display name of the entity, e.g. 'Binance 14'."
+             },
+             "category": {
+              "type": [
+               "string",
+               "null"
+              ],
+              "description": "Entity type: cex, dex, mixer, gambling, bridge, payment, …"
+             },
+             "source": {
+              "type": [
+               "string",
+               "null"
+              ],
+              "description": "Which feed stated this — arkham, etherscan, ofac, a customer push."
+             },
+             "confidence": {
+              "type": [
+               "number",
+               "null"
+              ]
+             },
+             "risk_score": {
+              "type": "number"
+             },
+             "sanctioned": {
+              "type": "boolean"
+             },
+             "sanction": {
+              "type": "object",
+              "properties": {
+               "label": {
+                "type": [
+                 "string",
+                 "null"
+                ]
+               },
+               "source": {
+                "type": [
+                 "string",
+                 "null"
+                ]
+               }
+              }
+             }
+            }
+           }
+          },
+          "transfers": {
+           "type": "array",
+           "items": {
+            "type": "object"
+           }
+          },
+          "has_more": {
+           "type": "boolean"
+          },
+          "scan": {
+           "type": "object",
+           "description": "How the answer was reached — read before trusting a negative.",
+           "properties": {
+            "basis": {
+             "type": "string",
+             "enum": [
+              "edges_window",
+              "counterparty_index"
+             ],
+             "description": "'edges_window' = the whole window was read. 'counterparty_index' = no window given, so the list came from an index that can lag."
+            },
+            "negative_conclusive": {
+             "type": "boolean",
+             "description": "false means 'nothing known', NOT 'nothing happened'."
+            },
+            "truncated": {
+             "type": "boolean"
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "$ref": "#/components/schemas/InvalidAddressError"
+          },
+          {
+           "$ref": "#/components/schemas/Error"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/transactions": {
+   "post": {
+    "operationId": "getTransactionsBetween",
+    "summary": "Raw transfers between two specific addresses",
+    "description": "Every recorded transfer from one address to another.\n\nChain-aware: on EVM chains these are the direct edges between the two addresses. On bitcoin, whose graph has no direct address-to-address edge, it returns the FULL edge set of the transactions where both addresses appear — co-inputs and change o…",
+    "tags": [
+     "Graph"
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "from",
+         "to",
+         "chain"
+        ],
+        "properties": {
+         "from": {
+          "type": "string",
+          "description": "Sending address.\n\nThe address to look up, in its normal display form.\n\n  * bitcoin  — base58 (`1…`, `3…`) or bech32/bech32m (`bc1…`, `bc1p…`). Case is SIGNIFICANT for base58; do not lowercase it.\n  * ethereum, bsc — `0x` + 40 hex characters, any case.\n  * tron — base58 (`T…`, 34 characters); the `0…"
+         },
+         "to": {
+          "type": "string",
+          "description": "Receiving address.\n\nThe address to look up, in its normal display form.\n\n  * bitcoin  — base58 (`1…`, `3…`) or bech32/bech32m (`bc1…`, `bc1p…`). Case is SIGNIFICANT for base58; do not lowercase it.\n  * ethereum, bsc — `0x` + 40 hex characters, any case.\n  * tron — base58 (`T…`, 34 characters); the…"
+         },
+         "chain": {
+          "type": "string",
+          "enum": [
+           "bitcoin",
+           "ethereum",
+           "bsc",
+           "tron"
+          ],
+          "description": "Which blockchain the address belongs to. Send one of the four values in the enum. The short forms used by the older clients (ETH, BTC, TRX, BNB) and any capitalisation are still accepted, but responses always echo the canonical spelling.\n\nGetting this wrong is the single commonest integration bug:…"
+         },
+         "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 100
+         },
+         "offset": {
+          "type": "integer",
+          "minimum": 0
+         },
+         "token": {
+          "type": "string",
+          "description": "Restrict to one token contract. Rejected on bitcoin."
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The transfers between the two addresses.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "count": {
+           "type": "integer"
+          },
+          "transactions": {
+           "type": "array",
+           "items": {
+            "type": "object"
+           }
+          },
+          "request_id": {
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "$ref": "#/components/schemas/InvalidAddressError"
+          },
+          {
+           "$ref": "#/components/schemas/Error"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/address-flows": {
+   "post": {
+    "operationId": "getAddressFlows",
+    "summary": "Monthly value moved through an address, per token",
+    "description": "Turnover per month per token — how much moved through, in and out.\n\n**This is not a balance and cannot be used to derive one.** Sums of movement do not reconcile to holdings.\n\nethereum only: the monthly aggregate is built and validated for that chain and other chains are rejected rather than answer…",
+    "tags": [
+     "Graph"
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "address",
+         "chain"
+        ],
+        "properties": {
+         "address": {
+          "type": "string",
+          "description": "The address to look up, in its normal display form.\n\n  * bitcoin  — base58 (`1…`, `3…`) or bech32/bech32m (`bc1…`, `bc1p…`). Case is SIGNIFICANT for base58; do not lowercase it.\n  * ethereum, bsc — `0x` + 40 hex characters, any case.\n  * tron — base58 (`T…`, 34 characters); the `0x` 20-byte form is…"
+         },
+         "chain": {
+          "type": "string",
+          "enum": [
+           "ethereum"
+          ],
+          "description": "ethereum only. Other chains are a 400."
+         },
+         "since": {
+          "type": [
+           "integer",
+           "string"
+          ],
+          "description": "Default: the last 12 months."
+         },
+         "until": {
+          "type": [
+           "integer",
+           "string"
+          ]
+         },
+         "granularity": {
+          "type": "string",
+          "enum": [
+           "month"
+          ],
+          "default": "month"
+         },
+         "token": {
+          "type": "string"
+         },
+         "top_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 10,
+          "description": "Ranked by movement count."
+         },
+         "include_native": {
+          "type": "boolean",
+          "default": false,
+          "description": "Native ETH movement, with the caveat the response attaches."
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Monthly turnover per token.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "$ref": "#/components/schemas/InvalidAddressError"
+          },
+          {
+           "$ref": "#/components/schemas/Error"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/tx-enrich": {
+   "post": {
+    "operationId": "enrichTransaction",
+    "summary": "Screen a single transaction by hash",
+    "description": "Economic summary of one transaction plus a label and risk reading for every participant, and a direction-aware verdict.\n\nPass `focus_address` — the wallet you are actually screening, e.g. your own deposit address — to scope the verdict to its direct counterparties and the direction the money moved…",
+    "tags": [
+     "Screening"
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "tx_hash",
+         "chain"
+        ],
+        "properties": {
+         "tx_hash": {
+          "type": "string",
+          "description": "EVM hashes are 0x-prefixed; bitcoin txids are bare hex. Both accepted."
+         },
+         "chain": {
+          "type": "string",
+          "enum": [
+           "bitcoin",
+           "ethereum",
+           "bsc",
+           "tron"
+          ],
+          "description": "Which blockchain the address belongs to. Send one of the four values in the enum. The short forms used by the older clients (ETH, BTC, TRX, BNB) and any capitalisation are still accepted, but responses always echo the canonical spelling.\n\nGetting this wrong is the single commonest integration bug:…"
+         },
+         "block_number": {
+          "type": "integer",
+          "description": "Required on chains that cannot resolve a bare hash — see the 422."
+         },
+         "focus_address": {
+          "type": "string",
+          "description": "The wallet being screened, if any.\n\nThe address to look up, in its normal display form.\n\n  * bitcoin  — base58 (`1…`, `3…`) or bech32/bech32m (`bc1…`, `bc1p…`). Case is SIGNIFICANT for base58; do not lowercase it.\n  * ethereum, bsc — `0x` + 40 hex characters, any case.\n  * tron — base58 (`T…`, 34 c…"
+         },
+         "include": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "enum": [
+            "economics",
+            "risk",
+            "participants",
+            "transfers"
+           ]
+          },
+          "description": "Default ['economics','risk']."
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The enriched transaction.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "tx_hash": {
+           "type": "string"
+          },
+          "chain": {
+           "type": "string"
+          },
+          "found": {
+           "type": "boolean"
+          },
+          "economics": {
+           "type": "object"
+          },
+          "risk": {
+           "type": "object"
+          },
+          "participants": {
+           "type": "array",
+           "items": {
+            "type": "object"
+           },
+           "description": "Each carries aml_score, risk_level, category, label, sanctioned and its role in the transaction."
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "$ref": "#/components/schemas/InvalidAddressError"
+          },
+          {
+           "$ref": "#/components/schemas/Error"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Transaction not found in the indexed data.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "block_number is required for this chain.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/entities": {
+   "post": {
+    "operationId": "getEntities",
+    "summary": "Profile a cluster (entity) rather than a single address",
+    "description": "Takes cluster ids — the `cluster_id` values that /v1/enrich returns — and profiles the whole grouped entity: its size, type, name, and the risk reading of its anchor address (the hot wallet or hub the cluster is keyed on).\n\nUse this when the question is about an exchange rather than about one of it…",
+    "tags": [
+     "Entities"
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "entity_ids"
+        ],
+        "properties": {
+         "entity_ids": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          },
+          "minItems": 1,
+          "maxItems": 100,
+          "description": "Cluster ids, e.g. 'deposit:1:0x…'."
+         },
+         "include": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          },
+          "description": "As on /v1/enrich."
+         },
+         "top_n": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 10
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Entity profiles.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "entities": {
+           "type": "array",
+           "items": {
+            "type": "object"
+           }
+          },
+          "not_found": {
+           "type": "array",
+           "items": {
+            "type": "object"
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/cluster-mappings": {
+   "post": {
+    "operationId": "getClusterMembers",
+    "summary": "List the member addresses of a cluster",
+    "description": "Every address belonging to the given clusters. An exchange's deposit cluster can hold hundreds of thousands of addresses, so results are paged with a keyset cursor: send back the `next_cursor` from the previous page. A cursor is only valid with a single entity id.",
+    "tags": [
+     "Entities"
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "entity_ids"
+        ],
+        "properties": {
+         "entity_ids": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          },
+          "minItems": 1,
+          "maxItems": 100
+         },
+         "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 100
+         },
+         "cursor": {
+          "type": "string",
+          "description": "`next_cursor` from the previous page. Single entity id only."
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Cluster members.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "mappings": {
+           "type": "array",
+           "items": {
+            "type": "object"
+           }
+          },
+          "not_found": {
+           "type": "array",
+           "items": {
+            "type": "object"
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/labels": {
+   "post": {
+    "operationId": "pushLabels",
+    "summary": "Push your own entity labels",
+    "description": "Upserts labels under `customer:{your id}`. They join the global label graph within about ten minutes and are visible to your own /v1/counterparties calls immediately.\n\nAddresses already tagged by a public source (Arkham, Etherscan, ENS) are REJECTED per entry rather than overwritten; the existing e…",
+    "tags": [
+     "Write"
+    ],
+    "security": [
+     {
+      "HmacSignature": [],
+      "ApiKeyAuth": [],
+      "HmacTimestamp": []
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "labels"
+        ],
+        "properties": {
+         "labels": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1000,
+          "items": {
+           "type": "object",
+           "required": [
+            "wallet_address",
+            "chain",
+            "category"
+           ],
+           "properties": {
+            "wallet_address": {
+             "type": "string",
+             "description": "The address to look up, in its normal display form.\n\n  * bitcoin  — base58 (`1…`, `3…`) or bech32/bech32m (`bc1…`, `bc1p…`). Case is SIGNIFICANT for base58; do not lowercase it.\n  * ethereum, bsc — `0x` + 40 hex characters, any case.\n  * tron — base58 (`T…`, 34 characters); the `0x` 20-byte form is…"
+            },
+            "chain": {
+             "type": "string",
+             "enum": [
+              "bitcoin",
+              "ethereum",
+              "bsc",
+              "tron"
+             ],
+             "description": "Which blockchain the address belongs to. Send one of the four values in the enum. The short forms used by the older clients (ETH, BTC, TRX, BNB) and any capitalisation are still accepted, but responses always echo the canonical spelling.\n\nGetting this wrong is the single commonest integration bug:…"
+            },
+            "category": {
+             "type": "string",
+             "description": "Entity type: cex, mixer, gambling, …"
+            },
+            "label": {
+             "type": "string",
+             "description": "Display name."
+            },
+            "confidence": {
+             "type": "number",
+             "minimum": 0,
+             "maximum": 1
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Per-entry result.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "upserted": {
+           "type": "integer"
+          },
+          "errors": {
+           "type": "array",
+           "items": {
+            "type": "object"
+           },
+           "description": "Per-entry rejections, each with its index."
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "$ref": "#/components/schemas/InvalidAddressError"
+          },
+          {
+           "$ref": "#/components/schemas/Error"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "hmac_required — an API key alone cannot write.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "operationId": "listMyLabels",
+    "summary": "List the labels you have pushed",
+    "description": "Your own pushes only, newest checked first. This is an admin boundary, not a privacy boundary: the underlying labels are globally visible once they join the graph.",
+    "tags": [
+     "Write"
+    ],
+    "security": [
+     {
+      "ApiKeyAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "chain",
+      "in": "query",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "bitcoin",
+        "ethereum",
+        "bsc",
+        "tron"
+       ],
+       "description": "Which blockchain the address belongs to. Send one of the four values in the enum. The short forms used by the older clients (ETH, BTC, TRX, BNB) and any capitalisation are still accepted, but responses always echo the canonical spelling.\n\nGetting this wrong is the single commonest integration bug:…"
+      }
+     },
+     {
+      "name": "category",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "schema": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 1000,
+       "default": 100
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "schema": {
+       "type": "integer",
+       "minimum": 0
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Your labels.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "operationId": "deleteMyLabels",
+    "summary": "Remove labels you pushed",
+    "description": "Only rows written under your own customer id are touched. Requires HMAC.",
+    "tags": [
+     "Write"
+    ],
+    "security": [
+     {
+      "HmacSignature": [],
+      "ApiKeyAuth": [],
+      "HmacTimestamp": []
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "labels": {
+          "type": "array",
+          "items": {
+           "type": "object",
+           "required": [
+            "wallet_address",
+            "chain"
+           ],
+           "properties": {
+            "wallet_address": {
+             "type": "string",
+             "description": "The address to look up, in its normal display form.\n\n  * bitcoin  — base58 (`1…`, `3…`) or bech32/bech32m (`bc1…`, `bc1p…`). Case is SIGNIFICANT for base58; do not lowercase it.\n  * ethereum, bsc — `0x` + 40 hex characters, any case.\n  * tron — base58 (`T…`, 34 characters); the `0x` 20-byte form is…"
+            },
+            "chain": {
+             "type": "string",
+             "enum": [
+              "bitcoin",
+              "ethereum",
+              "bsc",
+              "tron"
+             ],
+             "description": "Which blockchain the address belongs to. Send one of the four values in the enum. The short forms used by the older clients (ETH, BTC, TRX, BNB) and any capitalisation are still accepted, but responses always echo the canonical spelling.\n\nGetting this wrong is the single commonest integration bug:…"
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Deletion result.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "$ref": "#/components/schemas/InvalidAddressError"
+          },
+          {
+           "$ref": "#/components/schemas/Error"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/incidents": {
+   "post": {
+    "operationId": "pushIncidents",
+    "summary": "Report addresses involved in a named incident",
+    "description": "Files incident-derived risk seeds. Each entry names an address, the incident, and a label from the published taxonomy (GET /v1/risk-labels) — free-text categories are rejected.\n\nEvery address checksum is re-verified server-side (EIP-55, base58check, bech32): a mis-transcribed character would defame…",
+    "tags": [
+     "Write"
+    ],
+    "security": [
+     {
+      "HmacSignature": [],
+      "ApiKeyAuth": [],
+      "HmacTimestamp": []
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "incidents"
+        ],
+        "properties": {
+         "incidents": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+           "type": "object",
+           "required": [
+            "wallet_address",
+            "chain",
+            "incident_name"
+           ],
+           "properties": {
+            "wallet_address": {
+             "type": "string",
+             "description": "The address to look up, in its normal display form.\n\n  * bitcoin  — base58 (`1…`, `3…`) or bech32/bech32m (`bc1…`, `bc1p…`). Case is SIGNIFICANT for base58; do not lowercase it.\n  * ethereum, bsc — `0x` + 40 hex characters, any case.\n  * tron — base58 (`T…`, 34 characters); the `0x` 20-byte form is…"
+            },
+            "chain": {
+             "type": "string",
+             "enum": [
+              "bitcoin",
+              "ethereum",
+              "bsc",
+              "tron"
+             ],
+             "description": "Which blockchain the address belongs to. Send one of the four values in the enum. The short forms used by the older clients (ETH, BTC, TRX, BNB) and any capitalisation are still accepted, but responses always echo the canonical spelling.\n\nGetting this wrong is the single commonest integration bug:…"
+            },
+            "label": {
+             "type": "string",
+             "description": "A label from GET /v1/risk-labels."
+            },
+            "label_id": {
+             "type": "integer",
+             "description": "The same, by id."
+            },
+            "category": {
+             "type": "string"
+            },
+            "incident_name": {
+             "type": "string"
+            },
+            "description": {
+             "type": "string"
+            },
+            "source_url": {
+             "type": "string",
+             "description": "The published evidence. Without it the claim has nothing behind it."
+            },
+            "incident_date": {
+             "type": "string"
+            },
+            "confidence": {
+             "type": "number",
+             "minimum": 0,
+             "maximum": 1
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Per-entry result plus what was recorded.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "$ref": "#/components/schemas/InvalidAddressError"
+          },
+          {
+           "$ref": "#/components/schemas/Error"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "operationId": "listIncidents",
+    "summary": "Read recorded incidents",
+    "description": "The curated incident record: sources, retraction trail, and the other addresses of the same event.",
+    "tags": [
+     "Reference"
+    ],
+    "parameters": [
+     {
+      "name": "slug",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      },
+      "description": "Fetch one incident and its full record."
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "schema": {
+       "type": "integer"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "schema": {
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Incidents.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "operationId": "deactivateIncidents",
+    "summary": "Deactivate incident seeds you pushed",
+    "description": "Deactivation, not deletion: the row is the audit trail of a published accusation. This stops the seed from scoring; it does NOT retract risk already propagated to counterparties. Requires HMAC.",
+    "tags": [
+     "Write"
+    ],
+    "security": [
+     {
+      "HmacSignature": [],
+      "ApiKeyAuth": [],
+      "HmacTimestamp": []
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Deactivation result.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "$ref": "#/components/schemas/InvalidAddressError"
+          },
+          {
+           "$ref": "#/components/schemas/Error"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/attest": {
+   "post": {
+    "operationId": "attestAddress",
+    "summary": "Issue an EIP-712 signed risk attestation for on-chain use",
+    "description": "Signs a four-field struct a smart contract can verify, so a protocol can gate on our risk reading without trusting an HTTP response. Valid for 600 seconds; there is no nonce and no revocation channel, so that window is the only bound on acting on a stale verdict.\n\n`attestation` is exactly what the…",
+    "tags": [
+     "Attestation"
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "wallet_address",
+         "chain"
+        ],
+        "properties": {
+         "wallet_address": {
+          "type": "string",
+          "description": "The address to look up, in its normal display form.\n\n  * bitcoin  — base58 (`1…`, `3…`) or bech32/bech32m (`bc1…`, `bc1p…`). Case is SIGNIFICANT for base58; do not lowercase it.\n  * ethereum, bsc — `0x` + 40 hex characters, any case.\n  * tron — base58 (`T…`, 34 characters); the `0x` 20-byte form is…"
+         },
+         "chain": {
+          "type": "string",
+          "enum": [
+           "ethereum",
+           "bsc",
+           "tron",
+           "SEPOLIA",
+           "NILE"
+          ],
+          "description": "bitcoin is not attestable — see the description. SEPOLIA and NILE are testnets."
+         },
+         "include": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "enum": [
+            "typed_data"
+           ]
+          },
+          "description": "Echo the full EIP-712 payload, as a debugging aid."
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The signed attestation.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "status": {
+           "type": "string"
+          },
+          "message": {
+           "type": "string"
+          },
+          "result": {
+           "type": "object",
+           "properties": {
+            "attestation": {
+             "type": "object",
+             "description": "The signed struct, exactly as the contract reads it."
+            },
+            "signature": {
+             "type": "string"
+            },
+            "signer": {
+             "type": "string"
+            },
+            "domain": {
+             "type": "object"
+            },
+            "risk_score": {
+             "type": [
+              "number",
+              "null"
+             ],
+             "description": "Unsigned context."
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "$ref": "#/components/schemas/InvalidAddressError"
+          },
+          {
+           "$ref": "#/components/schemas/Error"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "503": {
+      "description": "Refusing to sign: the signer is unconfigured, or a fact source is unavailable. Retry rather than caching a verdict.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/risk-labels": {
+   "get": {
+    "operationId": "getRiskTaxonomy",
+    "summary": "The risk-label taxonomy",
+    "description": "Every risk label the API can attach to an address, its aliases, its category and its score. This is the vocabulary POST /v1/incidents validates against — read it before pushing.\n\n`source` says where the catalogue came from: 'postgres' is the authority, 'builtin' is the copy compiled into the image…",
+    "tags": [
+     "Reference"
+    ],
+    "parameters": [
+     {
+      "name": "category",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The taxonomy.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "labels": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "properties": {
+             "label_id": {
+              "type": "integer"
+             },
+             "label": {
+              "type": "string"
+             },
+             "aliases": {
+              "type": "array",
+              "items": {
+               "type": "string"
+              }
+             },
+             "category": {
+              "type": "string"
+             },
+             "category_name": {
+              "type": "string"
+             },
+             "risk_score": {
+              "type": "number"
+             }
+            }
+           }
+          },
+          "categories": {
+           "type": "array",
+           "items": {
+            "type": "object"
+           }
+          },
+          "total": {
+           "type": "integer"
+          },
+          "source": {
+           "type": "string",
+           "enum": [
+            "postgres",
+            "builtin"
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/supported-tokens-registry": {
+   "get": {
+    "operationId": "getSupportedTokens",
+    "summary": "Tokens whose symbol and decimals the API knows",
+    "description": "The contracts enrichment can name and denominate. Anything outside this list falls back to 18 decimals and a null symbol, which is why an amount for an unlisted token may be wrong — check here before showing one.",
+    "tags": [
+     "Reference"
+    ],
+    "parameters": [
+     {
+      "name": "chain",
+      "in": "query",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "bitcoin",
+        "ethereum",
+        "bsc",
+        "tron"
+       ],
+       "description": "Which blockchain the address belongs to. Send one of the four values in the enum. The short forms used by the older clients (ETH, BTC, TRX, BNB) and any capitalisation are still accepted, but responses always echo the canonical spelling.\n\nGetting this wrong is the single commonest integration bug:…"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The registry.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/changelog": {
+   "get": {
+    "operationId": "getChangelog",
+    "summary": "Published changes to this API",
+    "description": "Customer-facing changes, newest first. Date, kind, title, body.",
+    "tags": [
+     "Reference"
+    ],
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "schema": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 200,
+       "default": 50
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The changelog.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/stats": {
+   "get": {
+    "operationId": "getStats",
+    "summary": "Dataset coverage, or one address's graph statistics",
+    "description": "With no parameters: how much data backs the API — clusters, labelled entities, sanction seeds per chain and per jurisdiction. Some figures are estimates and say so in `estimated`.\n\nWith `?address=` and `?chain=`: cluster membership and counterparty counts for that one address, which is cheaper than…",
+    "tags": [
+     "Reference"
+    ],
+    "parameters": [
+     {
+      "name": "address",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "chain",
+      "in": "query",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "bitcoin",
+        "ethereum",
+        "bsc",
+        "tron"
+       ],
+       "description": "Which blockchain the address belongs to. Send one of the four values in the enum. The short forms used by the older clients (ETH, BTC, TRX, BNB) and any capitalisation are still accepted, but responses always echo the canonical spelling.\n\nGetting this wrong is the single commonest integration bug:…"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Coverage, or per-address statistics.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "$ref": "#/components/schemas/InvalidAddressError"
+          },
+          {
+           "$ref": "#/components/schemas/Error"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Rate limited (anonymous callers only). Authenticate to remove the limit.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Server error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/health": {
+   "get": {
+    "operationId": "getHealth",
+    "summary": "Service health",
+    "description": "Answers 503 when degraded, with the same body shape — parse it either way. A degraded API still answers queries, but with parts missing, and affected responses carry a `degraded` block of their own.",
+    "tags": [
+     "Reference"
+    ],
+    "responses": {
+     "200": {
+      "description": "Healthy.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object"
+        }
+       }
+      }
+     },
+     "503": {
+      "description": "Degraded — a backing store is unavailable.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "schemas": {
+   "InvalidAddressError": {
+    "type": "object",
+    "description": "Returned when the address cannot be an address of the chain it was sent with. It is a self-correcting error: `detail` names the chain the format DOES belong to, so the call can be retried correctly without another lookup. It is never returned for an address that is merely unknown to us — that is `n…",
+    "required": [
+     "error",
+     "detail",
+     "hint"
+    ],
+    "properties": {
+     "error": {
+      "type": "string",
+      "const": "invalid_address_format"
+     },
+     "detail": {
+      "type": "string",
+      "description": "What is wrong and what to send instead, naming the likely chain.",
+      "examples": [
+       "'0x28c6c06298d514db089934071355e5743bf21d60' is not a valid bitcoin address — that format belongs to ethereum, bsc or tron. Re-send with chain='ethereum', or send a bitcoin address."
+      ]
+     },
+     "hint": {
+      "type": "string",
+      "const": "Check chain matches address prefix",
+      "description": "Constant string, safe to match on."
+     },
+     "invalid": {
+      "type": "array",
+      "description": "POST /v1/enrich only, and only when EVERY address in the batch was malformed. A batch with at least one usable address answers 200 instead and reports the bad ones in `not_found[]`.",
+      "items": {
+       "type": "object",
+       "properties": {
+        "wallet_address": {
+         "type": "string"
+        },
+        "chain": {
+         "type": "string"
+        },
+        "detail": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "request_id": {
+      "type": "string"
+     }
+    }
+   },
+   "Error": {
+    "type": "object",
+    "description": "Ordinary failure. `error` is a short machine-readable reason.",
+    "required": [
+     "error"
+    ],
+    "properties": {
+     "error": {
+      "type": "string"
+     },
+     "detail": {
+      "type": "string",
+      "description": "Present when there is more to say."
+     },
+     "reason": {
+      "type": "string"
+     }
+    }
+   },
+   "Entity": {
+    "type": "object",
+    "description": "One enriched address.",
+    "properties": {
+     "wallet_address": {
+      "type": "string",
+      "description": "Echoed in the API's storage form."
+     },
+     "chain": {
+      "type": "string"
+     },
+     "label": {
+      "type": "string",
+      "description": "Display name, when the address is attributed."
+     },
+     "category": {
+      "type": "string",
+      "description": "Entity type: cex, dex, mixer, gambling, bridge, payment, darknet, …"
+     },
+     "category_confidence": {
+      "type": "number"
+     },
+     "entity_role": {
+      "type": "string",
+      "enum": [
+       "hot_wallet",
+       "cold_wallet",
+       "deposit",
+       "gas_supplier",
+       "treasury",
+       "custody"
+      ],
+      "description": "Which address of the venue this is. Refines `category`, never replaces it."
+     },
+     "cluster_id": {
+      "type": "string",
+      "description": "Pass to POST /v1/entities or /v1/cluster-mappings."
+     },
+     "cluster_size": {
+      "type": "integer"
+     },
+     "sanctioned": {
+      "type": [
+       "boolean",
+       "null"
+      ]
+     },
+     "sanction": {
+      "type": "object",
+      "properties": {
+       "label": {
+        "type": "string"
+       },
+       "source": {
+        "type": "string"
+       },
+       "confidence": {
+        "type": "number"
+       },
+       "jurisdictions": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       },
+       "name_derived": {
+        "type": "boolean",
+        "description": "true = read out of the entity's NAME, with no structured listing behind it."
+       }
+      }
+     },
+     "frozen": {
+      "type": "boolean",
+      "description": "A token issuer has frozen this address."
+     },
+     "aml_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Money-laundering risk, 0 (nothing known against it) to 100. This is a RISK figure, not a share of funds: an address that received 1% of its money from a sanctioned entity can score high, and the number never says how much of the balance is tainted.\n\nIt combines its parts by MAX, not by sum — direct…"
+     },
+     "risk_level": {
+      "type": "string",
+      "enum": [
+       "LOW",
+       "MEDIUM",
+       "HIGH",
+       "CRITICAL"
+      ],
+      "description": "The coarse band `aml_score` falls in, for callers that branch rather than plot. Provided so that every integration uses the same thresholds:\n\n  * `LOW`      — score below 25\n  * `MEDIUM`   — 25 to 59\n  * `HIGH`     — 60 to 89\n  * `CRITICAL` — 90 or above, OR `sanctioned: true` at any score\n\nThe san…"
+     },
+     "aml_score_breakdown": {
+      "type": "object",
+      "description": "Why `aml_score` is what it is. Combine by MAX, not by sum. Most sub-blocks appear only when they apply, so absence means 'did not fire', never 0.",
+      "properties": {
+       "direct_exposure": {
+        "type": "number",
+        "description": "Risk from this address's OWN labels and seeds."
+       },
+       "indirect_exposure": {
+        "type": "number",
+        "description": "MAX over the propagated origins — not their sum."
+       },
+       "behavioral_risk": {
+        "type": [
+         "number",
+         "null"
+        ],
+        "description": "null = no behavioural signal assessed; 0 = assessed and contributed nothing."
+       },
+       "exposure_direction": {
+        "type": "string",
+        "enum": [
+         "inbound",
+         "outbound",
+         "mixed"
+        ]
+       },
+       "sanction_direct": {
+        "type": "object",
+        "description": "Present when the address is itself on a sanctions list.",
+        "properties": {
+         "label": {
+          "type": "string"
+         },
+         "score": {
+          "type": "number"
+         },
+         "source": {
+          "type": "string"
+         },
+         "jurisdictions": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          },
+          "description": "US, EU, GB, UN. Absent means the authority was never recorded, not that there is none."
+         }
+        }
+       },
+       "frozen_direct": {
+        "type": "object",
+        "description": "Token issuer (Tether/Circle) has frozen this address.",
+        "properties": {
+         "issuers": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          }
+         },
+         "score": {
+          "type": "number"
+         },
+         "tokens": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          }
+         }
+        }
+       },
+       "entity_floor": {
+        "type": "object",
+        "description": "The score was forced to a known-clean floor because the address is identified infrastructure (an exchange hot wallet, a token contract). `raw_score` is what it would have been. Read this before reporting a 0.",
+        "properties": {
+         "reason": {
+          "type": "string"
+         },
+         "raw_score": {
+          "type": "number"
+         }
+        }
+       },
+       "incident_bonus": {
+        "type": "number",
+        "description": "Flat surcharge added because the incident canon names this address as a PARTICIPANT in a recorded incident — `incidents[].implicates_address` is true, i.e. role `perpetrator` or `intermediary`. Flat per address, not per incident: five reports about one address are still one claim. Victims and `ment…"
+       },
+       "non_wallet": {
+        "type": "object",
+        "description": "Not a wallet at all: a mint/burn pseudo-address or a token contract. Both exposures forced to 0.",
+        "properties": {
+         "reason": {
+          "type": "string"
+         },
+         "suppressed_direct": {
+          "type": "number"
+         },
+         "suppressed_indirect": {
+          "type": "number"
+         },
+         "registry": {
+          "type": "string"
+         }
+        }
+       },
+       "contacts": {
+        "type": "object",
+        "description": "Real counterparties whose transferred value is below the materiality threshold: recorded on purpose, scored at zero on purpose. A dusting attack must not raise a victim's score.",
+        "properties": {
+         "count": {
+          "type": "integer"
+         },
+         "max_value_usd": {
+          "type": "number"
+         },
+         "threshold_usd": {
+          "type": "number"
+         },
+         "reason": {
+          "type": "string"
+         }
+        }
+       },
+       "sanctions_contact": {
+        "type": "object",
+        "description": "Sub-threshold contact with a designated address. Lifted out of `contacts` because it is reportable regardless of amount.",
+        "properties": {
+         "count": {
+          "type": "integer"
+         },
+         "max_value_usd": {
+          "type": "number"
+         },
+         "reason": {
+          "type": "string"
+         }
+        }
+       },
+       "propagated_sources": {
+        "type": "array",
+        "description": "At most 10 rows, ordered by (hops asc, score desc).",
+        "items": {
+         "type": "object",
+         "description": "One risk origin that reached this address through the transaction graph. The money path is `src → … → via → this address` and only the two ends are returned; walk the middle with POST /v1/source-trace.",
+         "properties": {
+          "src": {
+           "type": "string",
+           "description": "The origin the risk started at."
+          },
+          "src_label": {
+           "type": [
+            "string",
+            "null"
+           ]
+          },
+          "category": {
+           "type": [
+            "string",
+            "null"
+           ],
+           "description": "sanction, mixer, hack, phishing, darknet, …"
+          },
+          "source": {
+           "type": [
+            "string",
+            "null"
+           ],
+           "description": "Who made the accusation, e.g. 'ofac:sdn_advanced'."
+          },
+          "source_tier": {
+           "type": [
+            "string",
+            "null"
+           ],
+           "description": "'community-report' for user-filed feeds; null means not tiered down."
+          },
+          "hops": {
+           "type": "integer",
+           "description": "Graph distance from `src` to this address."
+          },
+          "score": {
+           "type": "number",
+           "description": "Hop-decayed RISK contributed by this origin. Never a share of funds."
+          },
+          "via": {
+           "type": [
+            "string",
+            "null"
+           ],
+           "description": "The address that actually paid this one. null at hops 0 and 1."
+          },
+          "via_label": {
+           "type": [
+            "string",
+            "null"
+           ]
+          },
+          "direction": {
+           "type": "string",
+           "const": "inbound"
+          }
+         }
+        }
+       }
+      }
+     },
+     "source_of_funds": {
+      "type": "object",
+      "description": "Where the money came from, as CATEGORY buckets — not as addresses and not as a full accounting. The percentages need not sum to 100 and a bucket may legitimately be 0.",
+      "properties": {
+       "risk_summary": {
+        "type": "string",
+        "enum": [
+         "low",
+         "medium",
+         "high"
+        ]
+       },
+       "top_sources": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "category": {
+           "type": "string"
+          },
+          "percentage": {
+           "type": "number"
+          },
+          "label": {
+           "type": [
+            "string",
+            "null"
+           ]
+          },
+          "sanctioned": {
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     },
+     "counterparties": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      },
+      "description": "Top counterparties by value. Use POST /v1/counterparties for the full picture."
+     },
+     "incidents": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "description": "A documented incident this address appears in. Read `implicates_address` before presenting it as an accusation: a drained wallet is listed with role='victim' precisely so it is not mistaken for a participant.",
+       "properties": {
+        "slug": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "category": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "status": {
+         "type": "string",
+         "enum": [
+          "confirmed",
+          "alleged",
+          "disputed",
+          "retracted"
+         ],
+         "description": "Anything but 'confirmed' must stay visible to the reader."
+        },
+        "stream": {
+         "type": "string",
+         "enum": [
+          "curated",
+          "community"
+         ],
+         "description": "'curated' is an analyst-recorded investigation; 'community' is a user-filed report. Same shape, NOT the same grade of claim."
+        },
+        "occurred_at": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "summary": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "link": {
+         "type": "string",
+         "enum": [
+          "direct",
+          "propagated"
+         ],
+         "description": "'propagated' means the incident belongs to an origin whose risk reached here — it says nothing about this address."
+        },
+        "role": {
+         "type": [
+          "string",
+          "null"
+         ],
+         "enum": [
+          "perpetrator",
+          "intermediary",
+          "victim",
+          "mentioned",
+          null
+         ]
+        },
+        "implicates_address": {
+         "type": "boolean"
+        },
+        "named_in_source": {
+         "type": "boolean",
+         "description": "false = no published source prints this address; the link is our attribution."
+        },
+        "via": {
+         "type": "object",
+         "properties": {
+          "address": {
+           "type": "string"
+          },
+          "hops": {
+           "type": [
+            "integer",
+            "null"
+           ]
+          }
+         }
+        },
+        "sources": {
+         "type": "array",
+         "items": {
+          "type": "object",
+          "properties": {
+           "url": {
+            "type": "string"
+           },
+           "title": {
+            "type": [
+             "string",
+             "null"
+            ]
+           },
+           "publisher": {
+            "type": [
+             "string",
+             "null"
+            ]
+           },
+           "tier": {
+            "type": "string",
+            "enum": [
+             "vendor-advisory",
+             "law-enforcement",
+             "security-firm",
+             "media",
+             "social",
+             "internal"
+            ]
+           },
+           "published_at": {
+            "type": [
+             "string",
+             "null"
+            ]
+           },
+           "archive_url": {
+            "type": [
+             "string",
+             "null"
+            ]
+           },
+           "content_sha256": {
+            "type": [
+             "string",
+             "null"
+            ],
+            "description": "SHA-256 of the text we read, so a later edit is detectable."
+           },
+           "names_addresses": {
+            "type": "boolean"
+           },
+           "excerpt": {
+            "type": [
+             "string",
+             "null"
+            ]
+           }
+          }
+         }
+        }
+       }
+      },
+      "description": "Opt in with include: ['incidents']."
+     },
+     "degraded": {
+      "type": [
+       "object",
+       "null"
+      ],
+      "description": "A backing store did not answer, so this entity is INCOMPLETE. A low score on a degraded entity is not evidence of a clean address.",
+      "properties": {
+       "reason": {
+        "type": "string"
+       },
+       "calls": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       },
+       "causes": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   },
+   "CounterpartyLabel": {
+    "type": "object",
+    "description": "What we know about one address on the other side of a transfer.",
+    "properties": {
+     "address": {
+      "type": "string"
+     },
+     "label": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "description": "Display name of the entity, e.g. 'Binance 14'."
+     },
+     "category": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "description": "Entity type: cex, dex, mixer, gambling, bridge, payment, …"
+     },
+     "source": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "description": "Which feed stated this — arkham, etherscan, ofac, a customer push."
+     },
+     "confidence": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "risk_score": {
+      "type": "number"
+     },
+     "sanctioned": {
+      "type": "boolean"
+     },
+     "sanction": {
+      "type": "object",
+      "properties": {
+       "label": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "source": {
+        "type": [
+         "string",
+         "null"
+        ]
+       }
+      }
+     }
+    }
+   },
+   "IncidentLink": {
+    "type": "object",
+    "description": "A documented incident this address appears in. Read `implicates_address` before presenting it as an accusation: a drained wallet is listed with role='victim' precisely so it is not mistaken for a participant.",
+    "properties": {
+     "slug": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "category": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "confirmed",
+       "alleged",
+       "disputed",
+       "retracted"
+      ],
+      "description": "Anything but 'confirmed' must stay visible to the reader."
+     },
+     "stream": {
+      "type": "string",
+      "enum": [
+       "curated",
+       "community"
+      ],
+      "description": "'curated' is an analyst-recorded investigation; 'community' is a user-filed report. Same shape, NOT the same grade of claim."
+     },
+     "occurred_at": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "summary": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "link": {
+      "type": "string",
+      "enum": [
+       "direct",
+       "propagated"
+      ],
+      "description": "'propagated' means the incident belongs to an origin whose risk reached here — it says nothing about this address."
+     },
+     "role": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "enum": [
+       "perpetrator",
+       "intermediary",
+       "victim",
+       "mentioned",
+       null
+      ]
+     },
+     "implicates_address": {
+      "type": "boolean"
+     },
+     "named_in_source": {
+      "type": "boolean",
+      "description": "false = no published source prints this address; the link is our attribution."
+     },
+     "via": {
+      "type": "object",
+      "properties": {
+       "address": {
+        "type": "string"
+       },
+       "hops": {
+        "type": [
+         "integer",
+         "null"
+        ]
+       }
+      }
+     },
+     "sources": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "url": {
+         "type": "string"
+        },
+        "title": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "publisher": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "tier": {
+         "type": "string",
+         "enum": [
+          "vendor-advisory",
+          "law-enforcement",
+          "security-firm",
+          "media",
+          "social",
+          "internal"
+         ]
+        },
+        "published_at": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "archive_url": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "content_sha256": {
+         "type": [
+          "string",
+          "null"
+         ],
+         "description": "SHA-256 of the text we read, so a later edit is detectable."
+        },
+        "names_addresses": {
+         "type": "boolean"
+        },
+        "excerpt": {
+         "type": [
+          "string",
+          "null"
+         ]
+        }
+       }
+      }
+     }
+    }
+   },
+   "AmlScoreBreakdown": {
+    "type": "object",
+    "description": "Why `aml_score` is what it is. Combine by MAX, not by sum. Most sub-blocks appear only when they apply, so absence means 'did not fire', never 0.",
+    "properties": {
+     "direct_exposure": {
+      "type": "number",
+      "description": "Risk from this address's OWN labels and seeds."
+     },
+     "indirect_exposure": {
+      "type": "number",
+      "description": "MAX over the propagated origins — not their sum."
+     },
+     "behavioral_risk": {
+      "type": [
+       "number",
+       "null"
+      ],
+      "description": "null = no behavioural signal assessed; 0 = assessed and contributed nothing."
+     },
+     "exposure_direction": {
+      "type": "string",
+      "enum": [
+       "inbound",
+       "outbound",
+       "mixed"
+      ]
+     },
+     "sanction_direct": {
+      "type": "object",
+      "description": "Present when the address is itself on a sanctions list.",
+      "properties": {
+       "label": {
+        "type": "string"
+       },
+       "score": {
+        "type": "number"
+       },
+       "source": {
+        "type": "string"
+       },
+       "jurisdictions": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "US, EU, GB, UN. Absent means the authority was never recorded, not that there is none."
+       }
+      }
+     },
+     "frozen_direct": {
+      "type": "object",
+      "description": "Token issuer (Tether/Circle) has frozen this address.",
+      "properties": {
+       "issuers": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       },
+       "score": {
+        "type": "number"
+       },
+       "tokens": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "entity_floor": {
+      "type": "object",
+      "description": "The score was forced to a known-clean floor because the address is identified infrastructure (an exchange hot wallet, a token contract). `raw_score` is what it would have been. Read this before reporting a 0.",
+      "properties": {
+       "reason": {
+        "type": "string"
+       },
+       "raw_score": {
+        "type": "number"
+       }
+      }
+     },
+     "incident_bonus": {
+      "type": "number",
+      "description": "Flat surcharge added because the incident canon names this address as a PARTICIPANT in a recorded incident — `incidents[].implicates_address` is true, i.e. role `perpetrator` or `intermediary`. Flat per address, not per incident: five reports about one address are still one claim. Victims and `ment…"
+     },
+     "non_wallet": {
+      "type": "object",
+      "description": "Not a wallet at all: a mint/burn pseudo-address or a token contract. Both exposures forced to 0.",
+      "properties": {
+       "reason": {
+        "type": "string"
+       },
+       "suppressed_direct": {
+        "type": "number"
+       },
+       "suppressed_indirect": {
+        "type": "number"
+       },
+       "registry": {
+        "type": "string"
+       }
+      }
+     },
+     "contacts": {
+      "type": "object",
+      "description": "Real counterparties whose transferred value is below the materiality threshold: recorded on purpose, scored at zero on purpose. A dusting attack must not raise a victim's score.",
+      "properties": {
+       "count": {
+        "type": "integer"
+       },
+       "max_value_usd": {
+        "type": "number"
+       },
+       "threshold_usd": {
+        "type": "number"
+       },
+       "reason": {
+        "type": "string"
+       }
+      }
+     },
+     "sanctions_contact": {
+      "type": "object",
+      "description": "Sub-threshold contact with a designated address. Lifted out of `contacts` because it is reportable regardless of amount.",
+      "properties": {
+       "count": {
+        "type": "integer"
+       },
+       "max_value_usd": {
+        "type": "number"
+       },
+       "reason": {
+        "type": "string"
+       }
+      }
+     },
+     "propagated_sources": {
+      "type": "array",
+      "description": "At most 10 rows, ordered by (hops asc, score desc).",
+      "items": {
+       "type": "object",
+       "description": "One risk origin that reached this address through the transaction graph. The money path is `src → … → via → this address` and only the two ends are returned; walk the middle with POST /v1/source-trace.",
+       "properties": {
+        "src": {
+         "type": "string",
+         "description": "The origin the risk started at."
+        },
+        "src_label": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "category": {
+         "type": [
+          "string",
+          "null"
+         ],
+         "description": "sanction, mixer, hack, phishing, darknet, …"
+        },
+        "source": {
+         "type": [
+          "string",
+          "null"
+         ],
+         "description": "Who made the accusation, e.g. 'ofac:sdn_advanced'."
+        },
+        "source_tier": {
+         "type": [
+          "string",
+          "null"
+         ],
+         "description": "'community-report' for user-filed feeds; null means not tiered down."
+        },
+        "hops": {
+         "type": "integer",
+         "description": "Graph distance from `src` to this address."
+        },
+        "score": {
+         "type": "number",
+         "description": "Hop-decayed RISK contributed by this origin. Never a share of funds."
+        },
+        "via": {
+         "type": [
+          "string",
+          "null"
+         ],
+         "description": "The address that actually paid this one. null at hops 0 and 1."
+        },
+        "via_label": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "direction": {
+         "type": "string",
+         "const": "inbound"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "securitySchemes": {
+   "ApiKeyAuth": {
+    "type": "apiKey",
+    "in": "header",
+    "name": "X-API-Key",
+    "description": "Public key identifier (`pk_…`). On reads it removes the rate limit and unlocks your own pushed labels. It CANNOT write."
+   },
+   "HmacTimestamp": {
+    "type": "apiKey",
+    "in": "header",
+    "name": "X-Timestamp",
+    "description": "Unix milliseconds. Must be within 5 minutes of server time."
+   },
+   "HmacSignature": {
+    "type": "apiKey",
+    "in": "header",
+    "name": "X-Signature",
+    "description": "Hex HMAC-SHA256 over `{timestamp}\\n{METHOD}\\n{path}?{query}\\n{body}` keyed with your secret. Required on every write. Sending X-Timestamp or X-Signature commits the request to this path — a bad signature fails outright rather than falling back to key-only auth."
+   }
+  }
+ },
+ "security": [
+  {
+   "ApiKeyAuth": []
+  },
+  {}
+ ]
+}
